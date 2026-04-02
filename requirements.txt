@@ -1,0 +1,32 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# ── Core ML (local embeddings & sentence-transformers) ────────────────────
+torch>=2.2.0
+torchvision
+torchaudio
+
+# ── RAG & Vector Database ─────────────────────────────────────────────────
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-huggingface>=0.0.3
+langchain-chroma>=0.1.0
+sentence-transformers>=2.5.0
+chromadb>=0.5.0
+
+# ── Cloud LLM (Groq) ──────────────────────────────────────────────────────
+langchain-groq>=0.1.5
+
+# ── API server & frontend ─────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+pydantic>=2.7.0
+streamlit>=1.35.0
+
+# ── Data processing (notebooks) ───────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.24.0
+tqdm>=4.66.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0

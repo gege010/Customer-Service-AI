@@ -1,0 +1,41 @@
+# ── Python & virtual environments ─────────────────────────────────────────
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ── Secrets ───────────────────────────────────────────────────────────────
+.env
+
+# ── Streamlit ─────────────────────────────────────────────────────────────
+.streamlit/
+
+# ── Model weights (large files — store externally or with Git LFS) ────────
+models/checkpoints/
+models/lora_cs_model/*.safetensors
+models/lora_cs_model/tokenizer.json
+models/lora_cs_model/tokenizer.model
+# Also block any checkpoint subfolders with weights
+*.bin
+*.pt
+*.pth
+
+# ── Vector store (rebuilt from data with build_rag.py) ───────────────────
+data/chroma_db/
+data/chroma_db/**
+
+# ── System files ──────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
