@@ -26,12 +26,17 @@ from langchain_core.documents import Document
 # Paths & Configuration
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_RAW     = PROJECT_ROOT / "data" / "raw" / "Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv"
-CHROMA_DIR   = PROJECT_ROOT / "data" / "chroma_db"
+PROJECT_ROOT    = Path(__file__).parent.parent
+DATA_RAW        = PROJECT_ROOT / "data" / "raw" / os.getenv(
+    "BITEXT_CSV", "Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv"
+)
+CHROMA_DIR      = PROJECT_ROOT / "data" / "chroma_db"
 
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-BATCH_SIZE      = 500   # Documents to ingest per batch (tune to fit your RAM)
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+)
+BATCH_SIZE      = int(os.getenv("RAG_INGEST_BATCH_SIZE", "500"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -52,12 +57,20 @@ logger = logging.getLogger(__name__)
 def load_bitext(csv_path: Path) -> pd.DataFrame:
     """Load and clean the Bitext CSV dataset."""
     logger.info("Loading Bitext dataset from: %s", csv_path)
+
+    if not csv_path.exists():
+        logger.error("Bitext CSV not found at: %s", csv_path)
+        sys.exit(1)
+
     df = pd.read_csv(csv_path)
 
-    # Keep only the columns we need; drop rows with missing values
-    df = df[["instruction", "intent", "response"]].dropna()
+    required_cols = {"instruction", "intent", "response"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        logger.error("CSV is missing required columns: %s", missing)
+        sys.exit(1)
 
-    # Drop duplicate instructions to avoid redundant vector entries
+    df = df[list(required_cols)].dropna()
     df = df.drop_duplicates(subset=["instruction"])
 
     logger.info("Loaded %d unique Q&A pairs after cleaning.", len(df))
@@ -78,7 +91,6 @@ def build_documents(df: pd.DataFrame) -> list[Document]:
         question = str(row["instruction"]).strip()
         answer   = str(row["response"]).strip()
 
-        # Replace template placeholders with natural-language equivalents
         for placeholder, replacement in {
             "{{Order Number}}": "[order number]",
             "{{Name}}":         "[customer name]",
@@ -108,7 +120,7 @@ def build_documents(df: pd.DataFrame) -> list[Document]:
     return docs
 
 
-def build_vectorstore(docs: list[Document]) -> None:
+def build_vectorstore(docs: list[Document]) -> Chroma:
     """Embed the documents and persist them to ChromaDB."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Using device: %s for embeddings.", device.upper())
@@ -119,7 +131,6 @@ def build_vectorstore(docs: list[Document]) -> None:
         encode_kwargs={"normalize_embeddings": True},
     )
 
-    # Remove existing collection so we start fresh
     if CHROMA_DIR.exists():
         import shutil
         logger.warning("Existing ChromaDB found — removing to rebuild from scratch.")
@@ -127,9 +138,12 @@ def build_vectorstore(docs: list[Document]) -> None:
 
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Ingesting %d documents into ChromaDB in batches of %d …", len(docs), BATCH_SIZE)
+    logger.info(
+        "Ingesting %d documents into ChromaDB in batches of %d …",
+        len(docs), BATCH_SIZE,
+    )
 
-    vectorstore = None
+    vectorstore: Chroma | None = None
     for i in tqdm(range(0, len(docs), BATCH_SIZE), desc="Ingesting batches"):
         batch = docs[i : i + BATCH_SIZE]
         if vectorstore is None:
@@ -141,8 +155,10 @@ def build_vectorstore(docs: list[Document]) -> None:
         else:
             vectorstore.add_documents(batch)
 
+    doc_count = vectorstore._collection.count() if vectorstore else 0
     logger.info("ChromaDB successfully built at: %s", CHROMA_DIR)
-    logger.info("Total documents in store: %d", vectorstore._collection.count())
+    logger.info("Total documents in store: %d", doc_count)
+    return vectorstore
 
 
 # ---------------------------------------------------------------------------
@@ -150,16 +166,10 @@ def build_vectorstore(docs: list[Document]) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    if not DATA_RAW.exists():
-        logger.error("Bitext CSV not found at: %s", DATA_RAW)
-        logger.error("Please place the raw dataset file in the expected path.")
-        sys.exit(1)
-
     df   = load_bitext(DATA_RAW)
     docs = build_documents(df)
     build_vectorstore(docs)
-
-    logger.info("Done!  You can now start the API server.")
+    logger.info("Done! You can now start the API server.")
 
 
 if __name__ == "__main__":

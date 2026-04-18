@@ -9,8 +9,10 @@ __pycache__/
 *$py.class
 *.so
 
-# ── Secrets ───────────────────────────────────────────────────────────────
+# ── Secrets — NEVER commit these ──────────────────────────────────────────
 .env
+.env.local
+.env.production
 
 # ── Streamlit ─────────────────────────────────────────────────────────────
 .streamlit/
@@ -20,7 +22,6 @@ models/checkpoints/
 models/lora_cs_model/*.safetensors
 models/lora_cs_model/tokenizer.json
 models/lora_cs_model/tokenizer.model
-# Also block any checkpoint subfolders with weights
 *.bin
 *.pt
 *.pth
@@ -28,6 +29,9 @@ models/lora_cs_model/tokenizer.model
 # ── Vector store (rebuilt from data with build_rag.py) ───────────────────
 data/chroma_db/
 data/chroma_db/**
+
+# ── Jupyter notebook checkpoints ──────────────────────────────────────────
+.ipynb_checkpoints/
 
 # ── System files ──────────────────────────────────────────────────────────
 .DS_Store

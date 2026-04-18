@@ -9,6 +9,7 @@ Q&A documents via Maximal Marginal Relevance (MMR) search.
 
 import asyncio
 import logging
+import os
 import torch
 from pathlib import Path
 
@@ -21,13 +22,15 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-CHROMA_DIR      = Path(__file__).parent.parent / "data" / "chroma_db"
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+CHROMA_DIR       = Path(os.getenv("CHROMA_DIR", str(Path(__file__).parent.parent / "data" / "chroma_db")))
+EMBEDDING_MODEL  = os.getenv(
+    "EMBEDDING_MODEL",
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+)
 
-TOP_K      = 4     # Final documents returned to the LLM
-FETCH_K    = 20    # Candidate pool size for MMR diversity filtering
-MMR_LAMBDA = 0.6   # Relevance (1.0) ↔ Diversity (0.0) balance
-
+TOP_K       = int(os.getenv("RAG_TOP_K",       "4"))
+FETCH_K     = int(os.getenv("RAG_FETCH_K",     "20"))
+MMR_LAMBDA  = float(os.getenv("RAG_MMR_LAMBDA",  "0.6"))
 
 # ---------------------------------------------------------------------------
 # RAGPipeline
@@ -43,23 +46,23 @@ class RAGPipeline:
     or mixed-language documents in the store.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         logger.info("Initialising RAG pipeline …")
 
-        # Prefer GPU for faster embedding generation
+        if not CHROMA_DIR.exists():
+            raise FileNotFoundError(
+                f"ChromaDB not found at '{CHROMA_DIR}'. "
+                "Run `python src/build_rag.py` first to build the vector store."
+            )
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info("Using device: %s", device.upper())
 
         self._embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL,
             model_kwargs={"device": device},
             encode_kwargs={"normalize_embeddings": True},
         )
-
-        if not CHROMA_DIR.exists():
-            raise FileNotFoundError(
-                f"ChromaDB not found at '{CHROMA_DIR}'.  "
-                "Run `python src/build_rag.py` first to build the vector store."
-            )
 
         self._vectorstore = Chroma(
             persist_directory=str(CHROMA_DIR),
@@ -98,11 +101,18 @@ class RAGPipeline:
               - ``context``  (str)  – Concatenated document snippets.
               - ``sources``  (list) – Unique source labels for UI display.
               - ``intents``  (list) – Detected intent categories.
+
+        Raises:
+            RuntimeError: if the vector store is empty or retrieval fails.
         """
         loop = asyncio.get_event_loop()
-        docs = await loop.run_in_executor(
-            None, lambda: self._retriever.invoke(query)
-        )
+        try:
+            docs = await loop.run_in_executor(
+                None, lambda: self._retriever.invoke(query)
+            )
+        except Exception as exc:
+            logger.exception("RAG retrieval failed for query: %s", query[:80])
+            raise RuntimeError("RAG retrieval failed.") from exc
 
         if not docs:
             logger.warning("RAG returned no documents for query: %s", query[:80])
@@ -115,10 +125,9 @@ class RAGPipeline:
                 "intents": [],
             }
 
-        context_parts = [doc.page_content for doc in docs]
-        sources  = list({doc.metadata.get("source", "Bitext CS SOP") for doc in docs})
-        intents  = list({doc.metadata.get("intent", "general")        for doc in docs})
-        context  = "\n\n---\n\n".join(context_parts)
+        context     = "\n\n---\n\n".join(doc.page_content for doc in docs)
+        sources     = list({doc.metadata.get("source", "Bitext CS SOP") for doc in docs})
+        intents     = list({doc.metadata.get("intent", "general")        for doc in docs})
 
         logger.debug(
             "Retrieved %d docs (intents: %s) for query: %s",
@@ -134,10 +143,15 @@ class RAGPipeline:
         evaluating RAG performance via RAGAS.
         """
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: self._vectorstore.similarity_search_with_score(query, k=k),
-        )
+        try:
+            results = await loop.run_in_executor(
+                None,
+                lambda: self._vectorstore.similarity_search_with_score(query, k=k),
+            )
+        except Exception as exc:
+            logger.exception("Similarity search failed for query: %s", query[:80])
+            raise RuntimeError("Similarity search failed.") from exc
+
         return [
             {
                 "content": doc.page_content,
@@ -152,8 +166,9 @@ class RAGPipeline:
         """Return basic statistics about the vector store."""
         count = self._vectorstore._collection.count()
         return {
-            "total_documents": count,
-            "embedding_model": EMBEDDING_MODEL,
-            "top_k": TOP_K,
-            "fetch_k": FETCH_K,
+            "total_documents":  count,
+            "embedding_model":  EMBEDDING_MODEL,
+            "top_k":            TOP_K,
+            "fetch_k":          FETCH_K,
+            "mmr_lambda":       MMR_LAMBDA,
         }

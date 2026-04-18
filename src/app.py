@@ -5,6 +5,7 @@ Connects to the FastAPI backend (api.py) via HTTP and renders a premium
 dark-theme chat interface with real-time token streaming.
 """
 
+import os
 import uuid
 import requests
 from datetime import datetime
@@ -15,13 +16,14 @@ import streamlit as st
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_STREAM_URL = "http://127.0.0.1:8000/chat/stream"
-API_HEALTH_URL = "http://127.0.0.1:8000/health"
+API_BASE_URL   = "http://127.0.0.1:8000"
+API_STREAM_URL = f"{API_BASE_URL}/chat/stream"
+API_HEALTH_URL = f"{API_BASE_URL}/health"
 
-COMPANY_NAME  = "NovaMart"
-AGENT_NAME    = "Aria"
-AGENT_AVATAR  = "🎧"
-VERSION       = "4.0.0"
+COMPANY_NAME = "NovaMart"
+AGENT_NAME   = "Aria"
+AGENT_AVATAR = "🎧"
+VERSION      = "4.0.0"
 
 QUICK_REPLIES = [
     "Halo! Bisa bantu saya?",
@@ -49,30 +51,22 @@ def inject_css():
     st.markdown(
         """
         <style>
-        /* ── Google Fonts ── */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-        /* ── Global ── */
         html, body, [data-testid="stApp"] {
             font-family: 'Inter', sans-serif;
             background: #0f1117;
             color: #e2e8f0;
         }
 
-        /* ── Hide Streamlit chrome ── */
         #MainMenu, footer, header { visibility: hidden; }
 
-        /* ── Sidebar ── */
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #1a1f2e 0%, #0f1117 100%);
             border-right: 1px solid #2d3748;
         }
-        [data-testid="stSidebar"] .stMarkdown p {
-            color: #a0aec0;
-            font-size: 0.85rem;
-        }
+        [data-testid="stSidebar"] .stMarkdown p { color: #a0aec0; font-size: 0.85rem; }
 
-        /* ── Chat messages ── */
         [data-testid="stChatMessage"] {
             border-radius: 16px;
             padding: 12px 16px;
@@ -80,17 +74,14 @@ def inject_css():
             border: 1px solid rgba(255,255,255,0.05);
         }
 
-        /* ── User bubble ── */
         [data-testid="stChatMessage"][data-testid*="user"] {
             background: linear-gradient(135deg, #1e3a5f 0%, #1a2744 100%);
         }
 
-        /* ── Agent bubble ── */
         [data-testid="stChatMessage"]:not([data-testid*="user"]) {
             background: linear-gradient(135deg, #1a2035 0%, #0f1117 100%);
         }
 
-        /* ── Chat input ── */
         [data-testid="stChatInput"] textarea {
             background: #1a1f2e !important;
             border: 1px solid #4a5568 !important;
@@ -103,7 +94,6 @@ def inject_css():
             box-shadow: 0 0 0 3px rgba(102,126,234,0.15) !important;
         }
 
-        /* ── Buttons (quick replies) ── */
         .stButton button {
             background: linear-gradient(135deg, #1e3a5f, #1a2744) !important;
             color: #90cdf4 !important;
@@ -122,7 +112,6 @@ def inject_css():
             box-shadow: 0 4px 12px rgba(66,153,225,0.3) !important;
         }
 
-        /* ── Timestamp & caption ── */
         .msg-caption {
             font-size: 0.70rem;
             color: #718096;
@@ -130,7 +119,6 @@ def inject_css():
             text-align: right;
         }
 
-        /* ── Status badge ── */
         .status-badge {
             display: inline-flex;
             align-items: center;
@@ -153,8 +141,16 @@ def inject_css():
             0%, 100% { opacity: 1; }
             50%       { opacity: 0.4; }
         }
+        .status-badge.offline {
+            background: rgba(237,137,54,0.12);
+            border-color: rgba(237,137,54,0.3);
+            color: #ed8936;
+        }
+        .status-badge.offline .status-dot {
+            background: #ed8936;
+            animation: none;
+        }
 
-        /* ── Source chip ── */
         .source-chip {
             display: inline-block;
             background: rgba(102,126,234,0.15);
@@ -166,7 +162,6 @@ def inject_css():
             margin: 2px 3px;
         }
 
-        /* ── Divider ── */
         hr { border-color: #2d3748; }
         </style>
         """,
@@ -180,11 +175,22 @@ def inject_css():
 
 def init_session():
     if "session_id" not in st.session_state:
-        st.session_state.session_id       = str(uuid.uuid4())
+        st.session_state.session_id = str(uuid.uuid4())
     if "messages" not in st.session_state:
-        st.session_state.messages         = []
+        st.session_state.messages = []
     if "quick_replies_visible" not in st.session_state:
         st.session_state.quick_replies_visible = True
+
+
+# ---------------------------------------------------------------------------
+# Backend health
+# ---------------------------------------------------------------------------
+
+def backend_online() -> bool:
+    try:
+        return requests.get(API_HEALTH_URL, timeout=3).status_code == 200
+    except requests.exceptions.RequestException:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -196,17 +202,15 @@ def render_sidebar():
         st.markdown("## ⚙️ Tentang Sistem")
         st.markdown(
             f"""
-            **Model LLM**  
-            🤖 Llama 3.3 70B (Groq Cloud)
+            **Model LLM** — 🤖 {os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")} (Groq Cloud)
 
-            **Knowledge Base (RAG)**  
-            📚 Bitext CS Dataset — 26K+ Q&A pairs  
-            🔍 MMR Semantic Search via ChromaDB  
+            **Knowledge Base (RAG)**
+            📚 Bitext CS Dataset — 26K+ Q&A pairs
+            🔍 MMR Semantic Search via ChromaDB
             🌐 Multilingual Embeddings (MiniLM-L12)
 
-            **Stack**  
-            FastAPI · LangChain · ChromaDB  
-            Sentence-Transformers · Streamlit
+            **Stack** — FastAPI · LangChain · ChromaDB
+                         Sentence-Transformers · Streamlit
 
             **Version:** `{VERSION}`
             """,
@@ -214,23 +218,25 @@ def render_sidebar():
         )
         st.divider()
 
-        # Backend health check
         st.markdown("#### 🔌 Status Koneksi")
-        try:
-            r = requests.get(API_HEALTH_URL, timeout=3)
-            if r.status_code == 200:
-                st.markdown(
-                    '<div class="status-badge"><div class="status-dot"></div>Backend Online</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.error("Backend merespons dengan error.")
-        except requests.exceptions.ConnectionError:
-            st.warning("⚠️ Backend offline.  Jalankan `uvicorn api:app` di terminal.")
+        if backend_online():
+            st.markdown(
+                '<div class="status-badge">'
+                '<div class="status-dot"></div>Backend Online'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="status-badge offline">'
+                '<div class="status-dot"></div>Backend Offline'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.warning("Jalankan `uvicorn api:app` di terminal untuk memulai backend.")
 
         st.divider()
 
-        # Clear conversation
         if st.button("🗑️ Hapus Percakapan", use_container_width=True):
             st.session_state.messages              = []
             st.session_state.quick_replies_visible = True
@@ -249,18 +255,14 @@ def render_sidebar():
 # ---------------------------------------------------------------------------
 
 def render_header():
-    col1, col2 = st.columns([7, 3])
-    with col1:
-        st.markdown(
-            f"<h1 style='margin:0;font-size:1.8rem;font-weight:700;"
-            f"background:linear-gradient(90deg,#667eea,#764ba2);"
-            f"-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>"
-            f"{AGENT_AVATAR} {AGENT_NAME} — Customer Service AI</h1>",
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Powered by **Llama 3.3 70B** (Groq) + **Bitext RAG** (ChromaDB) · v{VERSION}"
-        )
+    st.markdown(
+        f"<h1 style='margin:0;font-size:1.8rem;font-weight:700;"
+        f"background:linear-gradient(90deg,#667eea,#764ba2);"
+        f"-webkit-background-clip:text;-webkit-text-fill-color:transparent;'>"
+        f"{AGENT_AVATAR} {AGENT_NAME} — Customer Service AI</h1>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Powered by **Llama 3.3 70B** (Groq) + **Bitext RAG** (ChromaDB) · v{VERSION}")
     st.divider()
 
 
@@ -296,44 +298,13 @@ def render_quick_replies() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Backend call
+# Backend streaming call
 # ---------------------------------------------------------------------------
-
-def call_backend(prompt: str) -> str:
-    """Send the prompt to the streaming backend and collect the full response."""
-    formatted_history = [
-        {"role": m["role"], "content": m["content"]}
-        for m in st.session_state.messages
-    ]
-    payload = {
-        "message":    prompt,
-        "session_id": st.session_state.session_id,
-        "history":    formatted_history,
-    }
-
-    try:
-        response = requests.post(
-            API_STREAM_URL, json=payload, stream=True, timeout=120
-        )
-        response.raise_for_status()
-        return response.text  # full streamed text
-
-    except requests.exceptions.ConnectionError:
-        return (
-            "❌ **Koneksi Gagal!**  "
-            "Pastikan server backend sudah berjalan:  \n"
-            "`cd src && uvicorn api:app --reload`"
-        )
-    except requests.exceptions.Timeout:
-        return "⏱️ **Waktu habis.** Server terlalu lama merespons. Coba lagi."
-    except Exception as exc:
-        return f"⚠️ Terjadi kesalahan: `{exc}`"
-
 
 def stream_to_placeholder(prompt: str, placeholder) -> str:
     """
-    Stream the backend response token-by-token into a Streamlit placeholder,
-    producing a typewriter effect in the UI.
+    POST the prompt to the streaming backend and render tokens
+    token-by-token into the given Streamlit placeholder.
     """
     formatted_history = [
         {"role": m["role"], "content": m["content"]}
@@ -346,36 +317,45 @@ def stream_to_placeholder(prompt: str, placeholder) -> str:
     }
 
     accumulated = ""
-    try:
-        response = requests.post(
-            API_STREAM_URL, json=payload, stream=True, timeout=120
-        )
-        response.raise_for_status()
 
-        for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
-            if chunk:
-                accumulated += chunk
-                placeholder.markdown(accumulated + "▌")
-
-        placeholder.markdown(accumulated)
-        return accumulated
-
-    except requests.exceptions.ConnectionError:
+    # Guard: if backend is offline, fail immediately rather than hanging
+    if not backend_online():
         msg = (
-            "❌ **Koneksi Gagal!**  "
-            "Pastikan server backend sudah berjalan:  \n"
-            "`cd src && uvicorn api:app --reload`"
+            "❌ **Backend Offline** — Pastikan server sudah berjalan:\n"
+            "`cd src && uvicorn api:app --host 127.0.0.1 --port 8000`"
         )
         placeholder.markdown(msg)
         return msg
+
+    try:
+        with requests.post(
+            API_STREAM_URL, json=payload, stream=True, timeout=120
+        ) as response:
+            response.raise_for_status()
+
+            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                if chunk:
+                    accumulated += chunk
+                    placeholder.markdown(accumulated + "▌")
+
+            placeholder.markdown(accumulated)
+            return accumulated
+
     except requests.exceptions.Timeout:
         msg = "⏱️ **Waktu habis.** Server terlalu lama merespons. Coba lagi."
         placeholder.markdown(msg)
         return msg
-    except Exception as exc:
-        msg = f"⚠️ Terjadi kesalahan: `{exc}`"
-        placeholder.markdown(msg)
-        return msg
+    except requests.exceptions.HTTPError as exc:
+        st.error(f"Server error ({exc.response.status_code}): periksa log backend.")
+        placeholder.markdown(
+            f"⚠️ Terjadi kesalahan server ({exc.response.status_code}). "
+            "Silakan coba lagi dalam beberapa saat."
+        )
+        return ""
+    except requests.exceptions.RequestException as exc:
+        st.error(f"Koneksi gagal: {exc}")
+        placeholder.markdown("❌ **Koneksi Gagal.** Pastikan backend sedang berjalan.")
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +370,6 @@ def main():
     render_header()
     render_messages()
 
-    # Input sources (quick-reply button OR typed text)
     quick_reply_prompt = render_quick_replies()
     typed_prompt       = st.chat_input(
         f"Tanyakan sesuatu kepada {AGENT_NAME}…", key="chat_input"
@@ -400,7 +379,7 @@ def main():
     if not prompt:
         return
 
-    # ── Display user message ──────────────────────────────────────────────
+    # ── Display user message ───────────────────────────────────────────────
     ts = datetime.now().strftime("%H:%M")
     with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
@@ -412,12 +391,12 @@ def main():
     st.session_state.messages.append(
         {"role": "user", "content": prompt, "time": ts}
     )
-    st.session_state.quick_replies_visible = False  # hide after first interaction
+    st.session_state.quick_replies_visible = False
 
-    # ── Display agent streaming response ─────────────────────────────────
+    # ── Display agent streaming response ────────────────────────────────────
     with st.chat_message("assistant", avatar=AGENT_AVATAR):
-        placeholder = st.empty()
-        ai_response = stream_to_placeholder(prompt, placeholder)
+        with st.spinner("Aria sedang mengetik…"):
+            ai_response = stream_to_placeholder(prompt, st.empty())
 
         ts_agent = datetime.now().strftime("%H:%M")
         st.markdown(
@@ -425,9 +404,10 @@ def main():
             unsafe_allow_html=True,
         )
 
-    st.session_state.messages.append(
-        {"role": "assistant", "content": ai_response.strip(), "time": ts_agent}
-    )
+    if ai_response:
+        st.session_state.messages.append(
+            {"role": "assistant", "content": ai_response.strip(), "time": ts_agent}
+        )
     st.rerun()
 
 

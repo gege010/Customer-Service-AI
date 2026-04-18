@@ -49,7 +49,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Configuration from environment (no hardcoded secrets)
+# ---------------------------------------------------------------------------
+
+ALLOWED_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:8501",
+).split(",")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+LLM_MODEL    = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_TEMP     = float(os.getenv("LLM_TEMPERATURE", "0.4"))
+MAX_TOKENS   = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+
+# ---------------------------------------------------------------------------
 # Shared state: populated on startup, cleared on shutdown
+# ---------------------------------------------------------------------------
+
 ml_state: dict = {}
 
 # ---------------------------------------------------------------------------
@@ -59,26 +76,40 @@ ml_state: dict = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Startup: initialise the local RAG pipeline and connect to Groq Cloud.
+    Startup: validate config, initialise the RAG pipeline and Groq LLM.
     Shutdown: release shared state.
     """
     logger.info("Starting Customer Service AI backend …")
 
-    # 1. Local RAG (ChromaDB + multilingual embeddings)
-    ml_state["rag"] = RAGPipeline()
+    # 1. Validate required secrets exist before accepting any traffic
+    if not GROQ_API_KEY or GROQ_API_KEY == "your_groq_api_key_here":
+        logger.error(
+            "GROQ_API_KEY is missing or still set to the placeholder value. "
+            "Edit .env and restart."
+        )
+        raise RuntimeError("GROQ_API_KEY not configured — refusing to start.")
 
-    # 2. Cloud LLM via Groq
-    groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        logger.error("GROQ_API_KEY not found in environment!  Set it in .env.")
+    # 2. Local RAG (ChromaDB + multilingual embeddings)
+    try:
+        ml_state["rag"] = RAGPipeline()
+    except FileNotFoundError as exc:
+        logger.error("ChromaDB vector store not found: %s", exc)
+        raise RuntimeError(
+            "ChromaDB not found. Run `python src/build_rag.py` before starting the server."
+        ) from exc
 
+    # 3. Groq LLM — key is validated above so this always gets a real key
     ml_state["llm"] = ChatGroq(
-        model="llama-3.3-70b-versatile",
-        temperature=0.4,
+        model=LLM_MODEL,
+        temperature=LLM_TEMP,
+        max_tokens=MAX_TOKENS,
+        api_key=GROQ_API_KEY,
         streaming=True,
     )
 
-    logger.info("All backend components ready.  Waiting for requests …")
+    logger.info(
+        "All backend components ready (model=%s). Waiting for requests …", LLM_MODEL
+    )
     yield
 
     ml_state.clear()
@@ -99,10 +130,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: allow only the Streamlit frontend origin by default
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -112,26 +145,38 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 class Message(BaseModel):
-    role: str
+    role: str = Field(..., pattern="^(user|assistant|system)$")
     content: str
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=2000)
-    session_id: str = Field(default="default")
-    history: list[Message] = Field(default_factory=list)
+    message:    str       = Field(..., min_length=1, max_length=2000)
+    session_id: str        = Field(default="default")
+    history:    list[Message] = Field(default_factory=list)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "message": "Bagaimana cara membatalkan pesanan?",
+                    "session_id": "uuid-here",
+                    "history": [],
+                }
+            ]
+        }
+    }
 
 
 class ChatResponse(BaseModel):
-    response: str
+    response:   str
     session_id: str
-    sources: list[str]
-    intents: list[str]
+    sources:    list[str]
+    intents:    list[str]
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    k: int = Field(default=5, ge=1, le=20)
+    query: str = Field(..., min_length=1, max_length=500)
+    k:     int = Field(default=5, ge=1, le=20)
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +229,15 @@ async def stream_response(
     Full pipeline: RAG retrieval → prompt assembly → Groq streaming.
 
     Keeps the last 6 messages of history to maintain conversational
-    coherence without wasting tokens.
+    coherence without wasting tokens.  Raises HTTPException if the backend
+    is not initialised (fails fast rather than 500-ing mid-stream).
     """
+    if "llm" not in ml_state or "rag" not in ml_state:
+        raise HTTPException(
+            status_code=503,
+            detail="Backend is still initialising. Retry in a few seconds.",
+        )
+
     llm = ml_state["llm"]
     rag = ml_state["rag"]
 
@@ -220,12 +272,19 @@ async def stream_response(
 @app.get("/health", tags=["Monitoring"])
 async def health_check():
     """Liveness probe — returns OK when the backend is fully initialised."""
-    if "llm" not in ml_state or "rag" not in ml_state:
-        raise HTTPException(status_code=503, detail="Backend not yet initialised.")
+    components = {
+        "rag": "rag" in ml_state,
+        "llm": "llm" in ml_state,
+    }
+    if not all(components.values()):
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "initialising", "components": components},
+        )
     return {
         "status": "ok",
-        "rag":    "ready",
-        "llm":    "ready (Groq Llama-3.3-70B)",
+        "rag":    f"ready ({ml_state['rag'].get_stats()['total_documents']} docs)",
+        "llm":    f"ready ({LLM_MODEL})",
     }
 
 
@@ -290,9 +349,6 @@ async def chat_stream(request: ChatRequest):
     Primary streaming endpoint consumed by the Streamlit UI.
     Streams LLM tokens as plain text for real-time rendering.
     """
-    if "llm" not in ml_state:
-        raise HTTPException(status_code=503, detail="Backend not ready.")
-
     return StreamingResponse(
         stream_response(request.message, request.history),
         media_type="text/plain",
@@ -304,4 +360,10 @@ async def chat_stream(request: ChatRequest):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(
+        "api:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,          # disable reload in production
+        timeout_keep_alive=30,
+    )
