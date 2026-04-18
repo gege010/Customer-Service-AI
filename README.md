@@ -73,11 +73,16 @@ The system prompt explicitly handles greetings/thanks (no forced SOP lookup), pl
 ```
 Customer-Service-AI/
 ├── .env                            # Environment variables (gitignored)
+├── .env.example                    # Template — copy to .env and fill in values
 ├── .gitignore
+├── .dockerignore
 ├── requirements.txt
+├── Dockerfile.api                  # FastAPI backend image
+├── Dockerfile.app                  # Streamlit frontend image
+├── docker-compose.yml              # Full-stack orchestration
 │
 ├── data/
-│   ├── chroma_db/                  # ChromaDB vector store (auto-generated)
+│   ├── chroma_db/                  # ChromaDB vector store (auto-generated, gitignored)
 │   ├── processed/                  # Cleaned dataset for fine-tuning
 │   └── raw/
 │       └── Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv
@@ -101,9 +106,48 @@ Customer-Service-AI/
 
 ## Setup
 
+### 🐳 Docker (Recommended)
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) with Docker Compose v2+
+
+#### 1 — Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env and set your GROQ_API_KEY
+```
+
+#### 2 — Build the RAG vector store (run once)
+
+```bash
+docker compose run --rm build_rag
+```
+
+Expected output: `ChromaDB successfully built. Total documents: 24635`
+
+> The ChromaDB index is persisted in a named Docker volume (`chroma_db`) and shared automatically with the API container. You only need to re-run this step when the dataset changes.
+
+#### 3 — Start the application
+
+```bash
+docker compose up api app
+```
+
+| Service | URL |
+|---|---|
+| Streamlit UI | http://localhost:8501 |
+| FastAPI docs | http://localhost:8000/docs |
+| Health check | http://localhost:8000/health |
+
+To stop: `Ctrl-C`, then `docker compose down`.
+
+---
+
+### 🐍 Local Development (without Docker)
+
 **Prerequisites:** Python 3.11+
 
-### 1 — Environment
+#### 1 — Environment
 
 ```bash
 conda create -n cs_ai python=3.11 -y
@@ -116,15 +160,16 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 pip install -r requirements.txt
 ```
 
-### 2 — Environment variables
-
-Create `.env` in the project root:
+#### 2 — Environment variables
 
 ```bash
-# Required
-GROQ_API_KEY=your_groq_api_key_here
+cp .env.example .env
+# Edit .env and set your GROQ_API_KEY
+```
 
-# Optional — defaults shown below
+Optional overrides (defaults shown):
+
+```bash
 CORS_ORIGINS=http://localhost:8501
 LLM_MODEL=llama-3.3-70b-versatile
 LLM_TEMPERATURE=0.4
@@ -138,7 +183,7 @@ CHROMA_DIR=data/chroma_db
 
 Get a free Groq API key at [console.groq.com](https://console.groq.com).
 
-### 3 — Build the RAG vector store (run once)
+#### 3 — Build the RAG vector store (run once)
 
 ```bash
 python src/build_rag.py
@@ -149,6 +194,14 @@ Expected output: `ChromaDB successfully built. Total documents: 24635`
 ---
 
 ## Running the Application
+
+### 🐳 Docker
+
+```bash
+docker compose up api app
+```
+
+### 🐍 Local
 
 Both servers must be running simultaneously.
 
@@ -209,3 +262,19 @@ On first startup the sentence-transformer model is downloaded from HuggingFace H
 
 ### Over-grounding prevention
 The system prompt conditionally bypasses the SOP for conversational turns (detected by semantic intent), ensuring natural dialogue flow alongside accurate policy answers.
+
+### Docker architecture
+Two separate images keep the footprint small and responsibilities clear:
+
+| Image | Base | Key contents |
+|---|---|---|
+| `cs-ai-api` | `python:3.11-slim` | FastAPI, ChromaDB, sentence-transformers, LangChain |
+| `cs-ai-app` | `python:3.11-slim` | Streamlit, requests |
+
+Both images use **multi-stage builds** (builder → runtime) to exclude compilers and build tools from the final layer, reducing image size significantly.
+
+**Volume strategy:**
+- `chroma_db` — named Docker volume shared between `build_rag` and `api` containers, persisting the 24K-document vector index across restarts.
+- `hf_cache` — caches the ~120 MB HuggingFace sentence-transformer weights so they are downloaded only once.
+
+**CPU-only PyTorch** is installed inside Docker to avoid pulling the 4 GB CUDA wheel. GPU support can be enabled by changing the base image to `nvidia/cuda` and removing the `--extra-index-url` CPU override in `Dockerfile.api`.

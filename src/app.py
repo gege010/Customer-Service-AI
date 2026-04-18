@@ -16,7 +16,7 @@ import streamlit as st
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_BASE_URL   = "http://127.0.0.1:8000"
+API_BASE_URL   = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 API_STREAM_URL = f"{API_BASE_URL}/chat/stream"
 API_HEALTH_URL = f"{API_BASE_URL}/health"
 

@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — Customer Service AI
+#
+# Services:
+#   build_rag  — one-shot container that ingests the Bitext CSV into ChromaDB
+#   api        — FastAPI backend (port 8000)
+#   app        — Streamlit frontend (port 8501)
+#
+# Usage:
+#   # 1. Copy .env.example to .env and fill in your GROQ_API_KEY
+#   # 2. First-time setup — build the RAG vector store:
+#   docker compose run --rm build_rag
+#   # 3. Start both servers:
+#   docker compose up api app
+#   # 4. Open http://localhost:8501
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── One-shot RAG builder ───────────────────────────────────────────────────
+  # Reads data/raw CSV → embeds → persists ChromaDB to the shared volume.
+  # Re-run manually only when the dataset changes.
+  build_rag:
+    build:
+      context: .
+      dockerfile: Dockerfile.api       # reuses the same env as the API
+    image: cs-ai-api:latest
+    command: ["python", "build_rag.py"]
+    working_dir: /app/src
+    env_file: .env
+    environment:
+      CHROMA_DIR: /app/data/chroma_db
+    volumes:
+      - chroma_db:/app/data/chroma_db
+      - hf_cache:/root/.cache/huggingface
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: cs-ai-api:latest
+    container_name: cs-ai-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CHROMA_DIR: /app/data/chroma_db
+      # Allow requests from the Streamlit container and local browser
+      CORS_ORIGINS: "http://localhost:8501,http://app:8501"
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_db:/app/data/chroma_db
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s    # allow time for model download on first run
+
+  # ── Streamlit frontend ─────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    image: cs-ai-app:latest
+    container_name: cs-ai-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Points the frontend at the backend service by container name
+      API_BASE_URL: "http://api:8000"
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  # Persists the ChromaDB vector store across container restarts
+  chroma_db:
+  # Caches HuggingFace sentence-transformer weights (avoids re-download)
+  hf_cache:

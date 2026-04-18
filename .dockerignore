@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .dockerignore — Customer Service AI
+#
+# Excludes files that are not needed inside Docker images to keep build
+# context small and avoid leaking secrets or heavy artifacts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Version control ──────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Secrets — NEVER send to Docker daemon ────────────────────────────────────
+.env
+.env.*
+
+# ── Python runtime artifacts ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ── Streamlit config ──────────────────────────────────────────────────────────
+.streamlit/
+
+# ── Vector store (pre-built index) ────────────────────────────────────────────
+# ChromaDB is stored in a Docker volume, not copied into the image.
+data/chroma_db/
+
+# ── Model weights (large, stored in Docker volume / external) ─────────────────
+models/
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# ── Jupyter notebooks (not needed at runtime) ────────────────────────────────
+notebooks/
+.ipynb_checkpoints/
+
+# ── Documentation & CI ───────────────────────────────────────────────────────
+README.md
+*.md
+*.txt
+!requirements.txt
+
+# ── macOS / Windows system files ─────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini

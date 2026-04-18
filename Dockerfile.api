@@ -1,0 +1,64 @@
+# ── Stage 1: Builder ─────────────────────────────────────────────────────────
+# Install all Python dependencies in an isolated layer so the final image
+# does not need build tools (gcc, cmake, etc.).
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# System deps needed to compile some wheels (e.g. chromadb, tokenizers)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# CPU-only torch — avoids pulling the 4 GB CUDA wheel inside Docker.
+# If you need GPU support, remove the --extra-index-url line and set the
+# base image to nvidia/cuda:12.1.0-runtime-ubuntu22.04 instead.
+RUN pip install --upgrade pip && \
+    pip install --prefix=/install --no-cache-dir \
+        torch>=2.2.0 \
+        torchvision>=0.17.0 \
+        torchaudio>=2.2.0 \
+        --extra-index-url https://download.pytorch.org/whl/cpu && \
+    pip install --prefix=/install --no-cache-dir -r requirements.txt \
+        --extra-index-url https://download.pytorch.org/whl/cpu
+
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="Customer Service AI"
+LABEL description="FastAPI backend — RAG pipeline (ChromaDB) + Groq LLM streaming"
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+WORKDIR /app
+
+# Copy application source and dataset (data/raw CSV needed by build_rag.py)
+COPY src/         ./src/
+COPY data/raw/    ./data/raw/
+
+# ChromaDB is stored at data/chroma_db — mount this as a Docker volume so
+# the pre-built index persists across container restarts and can be shared
+# with the build_rag service.
+VOLUME ["/app/data/chroma_db"]
+
+# HuggingFace model cache — mount as volume to avoid re-downloading on restart
+VOLUME ["/root/.cache/huggingface"]
+
+# FastAPI listens on 0.0.0.0 inside Docker so Docker's port mapping works.
+# The CORS_ORIGINS env var must point to the Streamlit container's public URL.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CHROMA_DIR=/app/data/chroma_db
+
+EXPOSE 8000
+
+# Run from src/ so Python can resolve `from rag_utils import ...` without
+# adding the package to PYTHONPATH (mirrors the local dev workflow).
+WORKDIR /app/src
+
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "30"]
